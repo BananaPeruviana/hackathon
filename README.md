@@ -2,7 +2,7 @@
 progetto Casu Marzu
 
 
-## Istallazione
+## Installazione
 
 mkdir annotatore_excel
 cd annotatore_excel
