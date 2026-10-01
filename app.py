@@ -104,7 +104,7 @@ fig = go.Figure(data=go.Scatterpolar(
   line_color='blue'
 ))
 fig.update_layout(
-  polar=dict(radialaxis=dict(visible=True, range=[1, 3.5])),
+  polar=dict(radialaxis=dict(visible=True, range=[0, 3.5])),
   showlegend=False,
   height=400,
   margin=dict(l=40, r=40, t=20, b=20)
