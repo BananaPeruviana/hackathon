@@ -1,2 +1,15 @@
 # hackathon
 progetto Casu Marzu
+
+
+## Istallazione
+
+mkdir annotatore_excel
+cd annotatore_excel
+
+python -m venv venv
+
+source venv/bin/activate     /     source venv/bin/activate.fish
+
+pip install streamlit pandas openpyxl plotly
+
