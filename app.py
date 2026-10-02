@@ -5,6 +5,7 @@ import io
 import os
 
 FILE_NAME = "S8.synthetic_cashy_sample.csv"
+FILE_ESTERNI = "DatiEsterni.csv"
 
 # --- CONFIGURAZIONE PAGINA ---
 st.set_page_config(page_title="Revisore AI - Cash Assistance", layout="wide")
@@ -24,6 +25,12 @@ def load_data():
             df[col] = None
     return df
 
+@st.cache_data
+def load_dati_esterni():
+    if not os.path.exists(FILE_ESTERNI):
+        return None
+    return pd.read_csv(FILE_ESTERNI, sep=';')
+
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
     if st.session_state.df is not None:
@@ -35,19 +42,42 @@ if st.session_state.df is None:
     st.stop()
 
 df = st.session_state.df
+df_esterni = load_dati_esterni()
 indice = st.session_state.current_index
+
+budget_totale = None
+budget_residuo = None
+spesa_approvata = 0
+if df_esterni is not None and {'Budget', 'Costo'}.issubset(df_esterni.columns):
+    valori_budget = pd.to_numeric(df_esterni['Budget'], errors='coerce').dropna()
+    if not valori_budget.empty:
+        budget_totale = valori_budget.iloc[0]
+        approvati = (
+            df['EligibilityTarget'].eq('INCLUSION')
+            & df['Accordo_Risposta'].isin(['Sì', 'Si'])
+        )
+        costi = pd.to_numeric(df_esterni['Costo'], errors='coerce')
+        spesa_approvata = costi.reindex(df.index[approvati]).sum()
+        budget_residuo = budget_totale - spesa_approvata
 
 # --- BARRA LATERALE (DOWNLOAD) ---
 with st.sidebar:
     st.header("Stato Lavoro")
     st.write(f"Righe completate: {min(indice, len(df))} su {len(df)}")
     st.progress(min(indice, len(df)) / len(df))
+
+    if budget_residuo is not None:
+        st.metric("Budget residuo", f"{budget_residuo:,.2f} €")
+        st.caption(
+            f"Budget iniziale: {budget_totale:,.2f} € | "
+            f"Spesa approvata: {spesa_approvata:,.2f} €"
+        )
     
     st.write("---")
     # Prepara il CSV per il download
     csv_data = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Scarica Dati Valutati",
+        label="Scarica Dati Valutati",
         data=csv_data,
         file_name="S8.annotato.csv",
         mime="text/csv",
@@ -92,7 +122,6 @@ categorie_radar = [
     'Needs_and_Coping.BasicNeeds', 'Needs_and_Coping.Housing', 'Needs_and_Coping.Neg.mechanism', 'Needs_and_Coping.Dependency'
 ]
 valori_radar = [riga[cat] if pd.notna(riga[cat]) else 1.0 for cat in categorie_radar]
-# Per chiudere la linea nel grafico a radar
 valori_radar.append(valori_radar[0])
 etichette_radar = [c.replace('_', ' ').replace('.', '\n') for c in categorie_radar]
 etichette_radar.append(etichette_radar[0])
@@ -111,6 +140,78 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 
+# ==========================================
+# 1D: GRAFICO DEI COSTI (DATI ESTERNI)
+# ==========================================
+if df_esterni is not None:
+    st.subheader("2.1 Distribuzione dei Costi (Dati Esterni)")
+    
+    # MODIFICA QUI SE LA TUA COLONNA HA UN NOME DIVERSO
+    colonna_costo = 'Costo' 
+    
+    if colonna_costo in df_esterni.columns:
+        # Raggruppa i costi per scaglioni di 100 euro
+        df_esterni['Costo_Binned'] = (df_esterni[colonna_costo] // 100) * 100
+        
+        # Conta quanti record ci sono per ogni scaglione
+        distribuzione = df_esterni['Costo_Binned'].value_counts().sort_index().reset_index()
+        distribuzione.columns = ['Scaglione_Costo', 'Numero_Record']
+        
+        fig_costi = go.Figure()
+        
+        # Linea generale della distribuzione
+        fig_costi.add_trace(go.Scatter(
+            x=distribuzione['Scaglione_Costo'],
+            y=distribuzione['Numero_Record'],
+            mode='lines+markers',
+            name='Distribuzione Costi',
+            line=dict(color='#8884d8', width=2),
+            marker=dict(size=6)
+        ))
+        
+        # Evidenzia il record in analisi (se l'indice esiste nei DatiEsterni)
+        if indice < len(df_esterni):
+            costo_corrente = df_esterni.iloc[indice][colonna_costo]
+            costo_binned_corrente = (costo_corrente // 100) * 100
+            
+            # Trova l'altezza (Y) per posizionare il pallino sulla curva
+            if costo_binned_corrente in distribuzione['Scaglione_Costo'].values:
+                y_corrente = distribuzione[distribuzione['Scaglione_Costo'] == costo_binned_corrente]['Numero_Record'].values[0]
+            else:
+                y_corrente = 0
+            
+            # Retta verticale
+            fig_costi.add_vline(
+                x=costo_binned_corrente, 
+                line_dash="dash", 
+                line_color="red", 
+                annotation_text=f"Record Attuale ({costo_corrente}€)",
+                annotation_position="top right"
+            )
+            
+            # Pallino di evidenziazione
+            fig_costi.add_trace(go.Scatter(
+                x=[costo_binned_corrente],
+                y=[y_corrente],
+                mode='markers',
+                name='Record Corrente',
+                marker=dict(color='red', size=14, symbol='circle', line=dict(color='white', width=2))
+            ))
+
+        fig_costi.update_layout(
+            xaxis_title="Costo (Raggruppato ogni 100 €)",
+            yaxis_title="Numero di Record",
+            showlegend=True,
+            height=350,
+            margin=dict(l=40, r=40, t=30, b=30)
+        )
+        
+        st.plotly_chart(fig_costi, use_container_width=True)
+    else:
+        st.warning(f" Colonna '{colonna_costo}' non trovata nel file {FILE_ESTERNI}. Modifica il nome nel codice.")
+else:
+    st.info(f" Il file {FILE_ESTERNI} non è presente. Se lo carichi, qui apparirà il grafico dei costi.")
+
 st.divider()
 
 # ==========================================
@@ -123,8 +224,6 @@ col_ai1, col_ai2 = st.columns(2)
 
 with col_ai1:
     st.info("**Motivazione (Reasoning Engine)**")
-    # Generiamo un mock-up del ragionamento basato sul punteggio, 
-    # dato che il dataset sintetico fornito non contiene la vera narrativa generata dall'LLM.
     testo_ragionamento = f"La famiglia presenta un punteggio demografico di {riga['Demographics_Score']:.1f} e un punteggio di necessità pari a {riga['NeedsandCoping_Score']:.1f}. "
     if riga['FinalScore'] > 40:
         testo_ragionamento += "I dati indicano una forte pressione sui meccanismi di sussistenza. Si raccomanda prioritizzazione."
@@ -148,7 +247,6 @@ st.divider()
 # ==========================================
 st.subheader("4. Decisione Finale Operatore")
 
-# Usiamo st.form per assicurarci che l'utente debba interagire attivamente prima di proseguire
 with st.form(key=f"form_{indice}"):
     q_ragionamento = st.radio(
         "A) Ritieni che la **Motivazione (Reasoning)** fornita dall'AI sia coerente con i dati?",
@@ -160,7 +258,6 @@ with st.form(key=f"form_{indice}"):
         options=["Sì", "No"], index=None, horizontal=True
     )
     
-    # Menù a tendina visibile sempre, ma obbligatorio solo se si sceglie "No"
     motivo_override = st.selectbox(
         "Se NON condividi la decisione dell'AI, indica il motivo principale dell'override:",
         options=[
@@ -177,15 +274,13 @@ with st.form(key=f"form_{indice}"):
     
     if submit_button:
         if q_ragionamento is None or q_risposta is None:
-            st.warning("⚠️ Devi rispondere a entrambe le domande (Sì/No) per procedere.")
+            st.warning(" Devi rispondere a entrambe le domande (Sì/No) per procedere.")
         elif q_risposta == "No" and motivo_override == "Nessun disaccordo":
-            st.warning("⚠️ Hai deciso di non condividere la decisione dell'AI. Devi selezionare un motivo di override dall'elenco.")
+            st.warning(" Hai deciso di non condividere la decisione dell'AI. Devi selezionare un motivo di override dall'elenco.")
         else:
-            # Salvataggio nello stato (session_state.df)
             st.session_state.df.at[indice, 'Accordo_Ragionamento'] = q_ragionamento
             st.session_state.df.at[indice, 'Accordo_Risposta'] = q_risposta
             st.session_state.df.at[indice, 'Motivo_Override'] = motivo_override if q_risposta == "No" else None
             
-            # Avanza riga e ricarica l'app per mostrare il caso successivo
             st.session_state.current_index += 1
             st.rerun()
